@@ -5,13 +5,15 @@ import logging
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-# --- IMPORTACIÓN DEL CEREBRO (OCR) ---
+# --- IMPORTACIÓN DE MOTORES (OCR y Parser) ---
 try:
     from src.processors.ocr_processor import OCRProcessor
+    from src.processors.parser import InvoiceParser
 except ImportError:
     # Solución para rutas si se ejecuta el script directamente desde src/
     sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
     from src.processors.ocr_processor import OCRProcessor
+    from src.processors.parser import InvoiceParser
 
 
 # --- CONFIGURACIÓN DE LOGGING ---
@@ -37,19 +39,24 @@ class InvoiceHandler(FileSystemEventHandler):
     """
     Controlador de eventos personalizado. Hereda de FileSystemEventHandler para 
     sobreescribir los métodos que reaccionan a cambios en el sistema de archivos.
+    Orquesta la detección, lectura (OCR) e interpretación (Parser).
     """
 
     def __init__(self):
         """
-        Constructor: Inicializa el motor OCR una única vez al arrancar el servicio.
-        Esto evita recargar Tesseract con cada archivo nuevo.
+        Constructor: Inicializa los motores de procesamiento (OCR y Parser) al arrancar.
+        Esto evita recargar modelos con cada archivo nuevo.
         """
-        logger.info("[SISTEMA] Inicializando motor OCR...")
+        logger.info("[SISTEMA] Inicializando motores de procesamiento...")
         try:
+            # Iniciar Motor OCR (Tesseract)
             self.ocr = OCRProcessor()
+
+            # Iniciar Motor de Parsing (Regex)
+            self.parser = InvoiceParser()
             logger.info("[OK] Motor OCR listo y a la espera.")
         except Exception as e:
-            logger.critical(f"[ERROR CRITICO] No se pudo iniciar el OCR: {e}")
+            logger.critical(f"[ERROR CRITICO] No se pudo iniciar el procesamiento: {e}")
             sys.exit(1)
 
     def on_created(self, event):
@@ -65,33 +72,36 @@ class InvoiceHandler(FileSystemEventHandler):
         # Validación de extensión: Solo procesa archivos con formato de factura (PDF o imagen).
         if filename.lower().endswith(('.pdf', '.png', '.jpg', '.jpeg')):
             logger.info(f"------------------------------------------------")
-            logger.info(f"[DETECTADO] Nuevo archivo: {filename}")
+            logger.info(f"[DETECTADO] Nuevo archivo: {os.path.basename(filename)}")
             
             # ---------------------------------------------------------
-            # ÁREA DE INTEGRACIÓN: Lógica de Negocio (Pipeline de OCR)
+            # ÁREA DE INTEGRACIÓN: Pipeline de Procesamiento (OCR -> Parser)
             # Este bloque actúa como punto de entrada para el procesamiento
             # de la Extracción y Transformación de datos.
             # ---------------------------------------------------------
 
             try:
+                # Extracción de Texto (OCR)
                 logger.info("[PROCESANDO] Extrayendo texto con Tesseract...")
+                raw_texto = self.ocr.extract_text(filename)
                 
-                # Llamada al cerebro OCR (Ejecución Real)
-                texto = self.ocr.extract_text(filename)
-                
-                # Validación del resultado
-                if texto:
-                    chars = len(texto)
-                    # Previsualización limpia (sin saltos de línea) para el log
-                    preview = texto[:100].replace('\n', ' ') 
-                    
-                    logger.info(f"[EXITO] Lectura completada. Caracteres extraídos: {chars}")
-                    logger.info(f"[PREVISUALIZACION] '{preview}...'")
-                else:
+                if not raw_texto:
                     logger.warning("[ADVERTENCIA] El OCR no devolvió texto (Imagen vacía o ilegible).")
+                    return
+
+                # Interpretación de Datos (Parsing)
+                logger.info("[ANALIZANDO] Ejecutando Parser (Extracción de Datos)...")
+                structured_data = self.parser.extract_data(raw_texto)
+                
+                # PASO 3: Resultado Final (Visualización en Log)
+                logger.info("[EXITO] Datos Estructurados Obtenidos:")
+                logger.info(f"   > PROVEEDOR : {structured_data.get('vendor')}")
+                logger.info(f"   > FECHA     : {structured_data.get('date')}")
+                logger.info(f"   > TAX ID    : {structured_data.get('tax_id')}")
+                logger.info(f"   > TOTAL     : {structured_data.get('total')}")
 
             except Exception as e:
-                logger.error(f"[ERROR] Falló el procesamiento del archivo: {e}")
+                logger.error(f"[ERROR] Falló el pipeline de procesamiento: {e}")
             
             logger.info(f"------------------------------------------------")
             
