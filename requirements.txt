@@ -1,0 +1,17 @@
+# Monitoreo
+watchdog
+
+# Procesamiento de Datos
+pandas
+openpyxl
+
+# OCR e Imagenes
+pytesseract
+pdf2image
+opencv-python
+
+# Base de Datos
+sqlalchemy
+
+# Configuración
+python-dotenv

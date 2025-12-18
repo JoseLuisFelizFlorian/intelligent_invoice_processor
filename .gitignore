@@ -1,0 +1,13 @@
+# .gitignore
+venv/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+data/01_raw/*
+data/02_processed/*
+data/03_errors/*
+data/database/*.db
+logs/*.log
+!.gitkeep
+.vscode/
