@@ -5,6 +5,15 @@ import logging
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+# --- IMPORTACIÓN DEL CEREBRO (OCR) ---
+try:
+    from src.processors.ocr_processor import OCRProcessor
+except ImportError:
+    # Solución para rutas si se ejecuta el script directamente desde src/
+    sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+    from src.processors.ocr_processor import OCRProcessor
+
+
 # --- CONFIGURACIÓN DE LOGGING ---
 # Se establece un sistema de trazabilidad para registrar eventos tanto en archivo como en consola.
 logging.basicConfig(
@@ -29,7 +38,20 @@ class InvoiceHandler(FileSystemEventHandler):
     Controlador de eventos personalizado. Hereda de FileSystemEventHandler para 
     sobreescribir los métodos que reaccionan a cambios en el sistema de archivos.
     """
-    
+
+    def __init__(self):
+        """
+        Constructor: Inicializa el motor OCR una única vez al arrancar el servicio.
+        Esto evita recargar Tesseract con cada archivo nuevo.
+        """
+        logger.info("[SISTEMA] Inicializando motor OCR...")
+        try:
+            self.ocr = OCRProcessor()
+            logger.info("[OK] Motor OCR listo y a la espera.")
+        except Exception as e:
+            logger.critical(f"[ERROR CRITICO] No se pudo iniciar el OCR: {e}")
+            sys.exit(1)
+
     def on_created(self, event):
         """
         Callback que se dispara automáticamente cuando el sistema operativo detecta 
@@ -42,6 +64,7 @@ class InvoiceHandler(FileSystemEventHandler):
         
         # Validación de extensión: Solo procesa archivos con formato de factura (PDF o imagen).
         if filename.lower().endswith(('.pdf', '.png', '.jpg', '.jpeg')):
+            logger.info(f"------------------------------------------------")
             logger.info(f"[DETECTADO] Nuevo archivo: {filename}")
             
             # ---------------------------------------------------------
@@ -50,9 +73,27 @@ class InvoiceHandler(FileSystemEventHandler):
             # de la Extracción y Transformación de datos.
             # ---------------------------------------------------------
 
-            logger.info("[PROCESANDO] Iniciando tarea simulada...")
-            time.sleep(1) # Simulación de latencia de proceso (p. ej. carga de OCR).
-            logger.info("[EXITO] Procesamiento finalizado (Simulado).")
+            try:
+                logger.info("[PROCESANDO] Extrayendo texto con Tesseract...")
+                
+                # Llamada al cerebro OCR (Ejecución Real)
+                texto = self.ocr.extract_text(filename)
+                
+                # Validación del resultado
+                if texto:
+                    chars = len(texto)
+                    # Previsualización limpia (sin saltos de línea) para el log
+                    preview = texto[:100].replace('\n', ' ') 
+                    
+                    logger.info(f"[EXITO] Lectura completada. Caracteres extraídos: {chars}")
+                    logger.info(f"[PREVISUALIZACION] '{preview}...'")
+                else:
+                    logger.warning("[ADVERTENCIA] El OCR no devolvió texto (Imagen vacía o ilegible).")
+
+            except Exception as e:
+                logger.error(f"[ERROR] Falló el procesamiento del archivo: {e}")
+            
+            logger.info(f"------------------------------------------------")
             
         else:
             # Uso de nivel DEBUG para evitar saturar el log principal con archivos no deseados.
