@@ -2,6 +2,8 @@ import sys
 import time
 import os
 import logging
+import shutil
+from datetime import datetime
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -36,12 +38,15 @@ logger = logging.getLogger(__name__)
 # Definición de rutas absolutas para asegurar que el script localice correctamente los directorios.
 BASE_DIR = os.getcwd()
 WATCHER_LOG_DIR = os.path.join(BASE_DIR, "data", "01_raw")
+PROCESSED_DIR = os.path.join(BASE_DIR, "data", "02_processed")
+ERROR_DIR = os.path.join(BASE_DIR, "data", "03_errors")
 
 class InvoiceHandler(FileSystemEventHandler):
     """
     Controlador de eventos personalizado. Hereda de FileSystemEventHandler para 
     sobreescribir los métodos que reaccionan a cambios en el sistema de archivos.
-    Orquesta la detección, lectura (OCR), interpretación (Parser) y persistencia (BD).
+    Orquesta la detección, lectura (OCR), interpretación (Parser), persistencia (BD)
+    y gestión de archivos (Mover a Procesados/Errores).
     """
 
     def __init__(self):
@@ -77,6 +82,9 @@ class InvoiceHandler(FileSystemEventHandler):
         
         # Validación de extensión: Solo procesa archivos con formato de factura (PDF o imagen).
         if filename.lower().endswith(('.pdf', '.png', '.jpg', '.jpeg')):
+            # Pausa de seguridad para asegurar que el archivo se ha terminado de copiar
+            time.sleep(1)
+            
             logger.info(f"------------------------------------------------")
             logger.info(f"[DETECTADO] Nuevo archivo: {os.path.basename(filename)}")
             
@@ -89,15 +97,16 @@ class InvoiceHandler(FileSystemEventHandler):
             try:
                 # Extracción de Texto (OCR)
                 logger.info("[PROCESANDO] Extrayendo texto con Tesseract...")
-                raw_texto = self.ocr.extract_text(filename)
+                raw_text = self.ocr.extract_text(filename)
                 
-                if not raw_texto:
-                    logger.warning("[ADVERTENCIA] El OCR no devolvió texto (Imagen vacía o ilegible).")
-                    return
+                if not raw_text:
+                    # Si falla el OCR, lanzamos error para mover a carpeta de Errores
+                    raise ValueError("El OCR no devolvió texto (Imagen vacía o ilegible).")
+
 
                 # Interpretación de Datos (Parsing)
                 logger.info("[ANALIZANDO] Ejecutando Parser (Extracción de Datos)...")
-                structured_data = self.parser.extract_data(raw_texto)
+                structured_data = self.parser.extract_data(raw_text)
                 
                 # Visualización en Log
                 logger.info("[EXITO] Datos Estructurados Obtenidos:")
@@ -112,15 +121,39 @@ class InvoiceHandler(FileSystemEventHandler):
                 # Limpiamos el nombre del archivo para guardarlo solo como referencia
                 clean_filename = os.path.basename(filename)
                 self.db.save_invoice(structured_data, clean_filename)
+                
+                # Gestión de Archivo: Mover a Procesados (ÉXITO)
+                self._move_file(filename, PROCESSED_DIR, "PROCESADO")
 
             except Exception as e:
                 logger.error(f"[ERROR] Falló el pipeline de procesamiento: {e}")
+                # Gestión de Archivo: Mover a Errores (FALLO)
+                self._move_file(filename, ERROR_DIR, "ERROR")
             
             logger.info(f"------------------------------------------------")
             
         else:
             # Uso de nivel DEBUG para evitar saturar el log principal con archivos no deseados.
             logger.debug(f"[IGNORADO] Formato no soportado: {filename}")
+
+    def _move_file(self, src_path, dest_folder, status_label):
+        """
+        Método auxiliar para mover archivos agregando un timestamp para evitar duplicados.
+        """
+        try:
+            if os.path.exists(src_path):
+                filename = os.path.basename(src_path)
+                # Generar nombre único: factura.pdf -> factura_20251219_103000.pdf
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                name, ext = os.path.splitext(filename)
+                new_name = f"{name}_{timestamp}{ext}"
+                
+                dest_path = os.path.join(dest_folder, new_name)
+                
+                shutil.move(src_path, dest_path)
+                logger.info(f"[{status_label}] Archivo movido a: {dest_folder}")
+        except Exception as e:
+            logger.error(f"[FS ERROR] No se pudo mover el archivo: {e}")
 
 def start_watcher():
     """
@@ -131,6 +164,12 @@ def start_watcher():
     if not os.path.exists(WATCHER_LOG_DIR):
         logger.error(f"[ERROR] La carpeta no existe: {WATCHER_LOG_DIR}")
         return
+    
+    # --- Crear carpetas de destino si no existen ---
+    if not os.path.exists(PROCESSED_DIR):
+        os.makedirs(PROCESSED_DIR)
+    if not os.path.exists(ERROR_DIR):
+        os.makedirs(ERROR_DIR)
 
     event_handler = InvoiceHandler()
     observer = Observer() # El Observer es el hilo que vigila los cambios del sistema operativo.
