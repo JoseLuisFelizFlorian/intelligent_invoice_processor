@@ -5,15 +5,17 @@ import logging
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-# --- IMPORTACIÓN DE MOTORES (OCR y Parser) ---
+# --- IMPORTACIÓN DE MOTORES Y BD (OCR, Parser, Database) ---
 try:
     from src.processors.ocr_processor import OCRProcessor
     from src.processors.parser import InvoiceParser
+    from src.db.manager import DatabaseManager
 except ImportError:
     # Solución para rutas si se ejecuta el script directamente desde src/
     sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
     from src.processors.ocr_processor import OCRProcessor
     from src.processors.parser import InvoiceParser
+    from src.db.manager import DatabaseManager
 
 
 # --- CONFIGURACIÓN DE LOGGING ---
@@ -23,7 +25,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s', # Estructura del mensaje: Tiempo - Nivel - Mensaje.
     datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[
-        logging.FileHandler("logs/watcher.log"), # Persistencia de logs en disco.
+        logging.FileHandler("logs/watcher.log", encoding='utf-8'), # Persistencia de logs en disco.
         logging.StreamHandler(sys.stdout)        # Salida visual en la terminal.
     ]
 )
@@ -39,12 +41,12 @@ class InvoiceHandler(FileSystemEventHandler):
     """
     Controlador de eventos personalizado. Hereda de FileSystemEventHandler para 
     sobreescribir los métodos que reaccionan a cambios en el sistema de archivos.
-    Orquesta la detección, lectura (OCR) e interpretación (Parser).
+    Orquesta la detección, lectura (OCR), interpretación (Parser) y persistencia (BD).
     """
 
     def __init__(self):
         """
-        Constructor: Inicializa los motores de procesamiento (OCR y Parser) al arrancar.
+        Constructor: Inicializa los motores de procesamiento (OCR, Parser y BD) al arrancar.
         Esto evita recargar modelos con cada archivo nuevo.
         """
         logger.info("[SISTEMA] Inicializando motores de procesamiento...")
@@ -54,7 +56,11 @@ class InvoiceHandler(FileSystemEventHandler):
 
             # Iniciar Motor de Parsing (Regex)
             self.parser = InvoiceParser()
-            logger.info("[OK] Motor OCR listo y a la espera.")
+            
+            # Iniciar Gestor de Base de Datos (SQLite)
+            self.db = DatabaseManager()
+
+            logger.info("[OK] Sistema listo: OCR + Parser + DB conectados.")
         except Exception as e:
             logger.critical(f"[ERROR CRITICO] No se pudo iniciar el procesamiento: {e}")
             sys.exit(1)
@@ -75,9 +81,9 @@ class InvoiceHandler(FileSystemEventHandler):
             logger.info(f"[DETECTADO] Nuevo archivo: {os.path.basename(filename)}")
             
             # ---------------------------------------------------------
-            # ÁREA DE INTEGRACIÓN: Pipeline de Procesamiento (OCR -> Parser)
+            # ÁREA DE INTEGRACIÓN: Pipeline de Procesamiento (OCR -> Parser -> BD)
             # Este bloque actúa como punto de entrada para el procesamiento
-            # de la Extracción y Transformación de datos.
+            # de la Extracción, Transformación y Carga de datos (ETL).
             # ---------------------------------------------------------
 
             try:
@@ -93,12 +99,19 @@ class InvoiceHandler(FileSystemEventHandler):
                 logger.info("[ANALIZANDO] Ejecutando Parser (Extracción de Datos)...")
                 structured_data = self.parser.extract_data(raw_texto)
                 
-                # PASO 3: Resultado Final (Visualización en Log)
+                # Visualización en Log
                 logger.info("[EXITO] Datos Estructurados Obtenidos:")
                 logger.info(f"   > PROVEEDOR : {structured_data.get('vendor')}")
                 logger.info(f"   > FECHA     : {structured_data.get('date')}")
                 logger.info(f"   > TAX ID    : {structured_data.get('tax_id')}")
                 logger.info(f"   > TOTAL     : {structured_data.get('total')}")
+
+                # Persistencia (Base de Datos)
+                logger.info("[ALMACENANDO] Guardando registro en Base de Datos...")
+                
+                # Limpiamos el nombre del archivo para guardarlo solo como referencia
+                clean_filename = os.path.basename(filename)
+                self.db.save_invoice(structured_data, clean_filename)
 
             except Exception as e:
                 logger.error(f"[ERROR] Falló el pipeline de procesamiento: {e}")
